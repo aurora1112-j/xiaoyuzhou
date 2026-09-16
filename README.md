@@ -1,134 +1,111 @@
 # xiaoyuzhou-cli
 
-> Read-only CLI for **Xiaoyuzhou FM (小宇宙 FM / 小宇宙播客)** — list subscriptions, browse episodes (with real date-window pagination), fetch official transcripts, search podcasts. Agent-friendly, composable, clean.
+> Read-only CLI for **Xiaoyuzhou FM (小宇宙 FM / 小宇宙播客)** — fetch an episode's audio, shownotes and comments from the public web pages. No account, no token.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 
 ## What this is
 
-`xiaoyuzhou` is a small command-line tool that lets any agent (or human) read a user's Xiaoyuzhou FM podcast data by composing ordinary shell commands — pipe into `jq`, filter by date, project fields, page through history. It prints **JSON to stdout** and uses **exit codes** for success/failure, so an agent never has to parse prose or swallow a 200 KB blob into its context just to get a title.
+`xyz` reads what xiaoyuzhoufm.com publishes on its **public pages** and prints it as JSON. It composes with `jq`, uses exit codes for control flow, and needs no login.
 
-- 我的订阅 / subscribed podcasts
-- 单集列表 / a podcast's episodes — **auto-paginated**, with inclusive `--since` / `--until` date windows
-- 单集详情 + shownotes
-- 官方字幕 / official transcript (one-shot download + parse, or just the signed URL)
-- 搜索播客 / 单集 (search podcasts or episodes)
-- 播放历史 / play history
+- 单集音频 / an episode's audio — direct download, resumable naming, progress
+- Shownotes — plain text (links preserved) or raw HTML
+- 热门评论 / the comments the page carries, with replies and podcaster flags
+- 播客信息 / a show's metadata and the episodes its page lists
 
-All commands are **read-only by design**. No subscribe / unsubscribe / comment / mark-played — an agent can recommend but never act on the user's behalf without explicit human approval.
+## Scope, and why it is drawn here
 
-> **Why a CLI and not an MCP server?** This started life as an MCP server. For a browse/filter/paginate read tool, a CLI turned out to be the more agent-friendly surface: it composes with `jq`/`grep`/`head`, lets the caller pull *only* the fields it needs (no fixed fat payload, no token-limit cliff), and pages through history natively. The auth/self-heal core (`xiaoyuzhou/client.py`) is unchanged — only the surface is.
+This tool deliberately talks **only** to `https://www.xiaoyuzhoufm.com/`, which `robots.txt` permits (it disallows only `/www`, `/www/login` and `/www/recharge`). It sends an ordinary desktop browser User-Agent and nothing else — no forged device fingerprint, no auth headers, no reverse-engineered app endpoints.
 
-## When to use this
+**Not implemented, by design:**
 
-Whenever the user mentions any of these (Chinese or English):
+| Not available | Why |
+|---|---|
+| 我的订阅 / subscriptions | Requires a logged-in account |
+| 播放历史 / play history | Requires a logged-in account |
+| 官方字幕 / official transcripts | The page exposes only `transcript.mediaId`, no URL. Fetching one needs the app's private token-authenticated endpoint, whose CDN enforces a User-Agent allowlist. |
+| 全量评论 / all comments | The page carries only the first batch (~20). The web surface has no pagination endpoint. |
 
-- 小宇宙 / 小宇宙 FM / 小宇宙播客 / Xiaoyuzhou / Xiaoyuzhoufm
-- 我的播客订阅 / 订阅了什么播客 / podcast subscriptions
-- 某天/最近更新了哪些播客 / 新单集 / new episodes on a date
-- 播客字幕 / 播客转文字 / podcast transcript
-- 搜播客 / 找播客 / search podcast/episode
-- 我最近听了什么 / 播放历史 / play history
+Using an unauthorised third-party tool against the app's private API violates §3.9 and §3.10 of [小宇宙软件许可及服务协议](https://post.xiaoyuzhoufm.com/podcast-agreement/) and can get an account suspended under §8.2. That is why the login-based surface was removed rather than merely throttled.
 
-For **Apple Podcasts / Spotify / generic podcasts**, this is NOT the right tool — it only talks to Xiaoyuzhou.
+**For transcripts**, `xyz ep` reports `audio_url` and `has_official_transcript`, so you can download the audio and transcribe it locally with whatever tool you prefer.
 
 ## Commands
 
 ```
-xyz subs                                   # your subscribed podcasts
-xyz episodes <pid> [--limit N]             # newest N episodes (auto-paginated)
-xyz episodes <pid> --since 2026-05-28 --until 2026-05-29   # full date window
-xyz episode <eid>                          # one episode's detail
-xyz transcript <eid> --media-id <mid> [--format plain|timestamped|segments] [--text]xyz transcript-url <eid> --media-id <mid>  # signed URL only, no download
-xyz search "关键词" [--kind PODCAST|EPISODE] [--limit N]
-xyz history [--limit N]
-xyz send-code <phone>                      # SMS login, step 1
-xyz login <phone> <code>                   # SMS login, step 2 (saves token)
+xyz ep <eid|url>                    # metadata + shownotes + top comments
+xyz ep <eid|url> --text             # just the shownotes, as plain text
+xyz ep <eid|url> --html             # also include raw shownotes HTML
+xyz ep <eid|url> --no-comments      # skip the comments section
+
+xyz audio <eid|url> -o <path>       # download the audio (file or directory)
+xyz audio <eid|url> --url-only      # print the URL, download nothing
+
+xyz comments <eid|url>              # the comments the page carries
+xyz comments <eid|url> --identity   # include commenter uid/avatar/bio
+
+xyz podcast <pid|url>               # a show + the episodes its page lists
 ```
 
-Shared output flags on list/detail commands:
+Every command accepts a bare 24-hex id **or** the full page URL. `--fields a,b,c` projects the output to just those keys; `--jsonl` prints one object per line.
 
-- `--jsonl` — one JSON object per line (ideal for `| jq` / `| grep`)
-- `--full` — keep `shownotes_html` (dropped by default to stay lean)
-- `--fields a,b,c` — project to just those keys (naming a slimmed key brings it back)
+### Exit codes
 
-### Why the date window matters
-
-The upstream `/v1/episode/list` caps each page at ~15 episodes and exposes a `loadMoreKey` cursor. `xyz episodes` follows that cursor automatically: with `--since` it keeps paging back until the window is covered — so a high-frequency feed that posts several episodes a day is never silently truncated at 15.
-
-`--limit` is always an upper bound, including inside a date window (default 20). Pass a large `--limit` when you want to sweep a wide window:
-
-```bash
-xyz episodes <pid> --since 2026-01-01 --limit 500
-```
-
-```bash
-# Which of my subscriptions updated on 2026-05-28? (title + podcast only)
-for pid in $(xyz subs --fields pid --jsonl | jq -r .pid); do
-  xyz episodes "$pid" --since 2026-05-28 --until 2026-05-28 \
-      --jsonl --fields podcast_title,title
-done
-```
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `2` | a described error — JSON with `error`/`message`/`hint` on stderr |
+| `1` | an unexpected error |
+| `3` | `--text` was asked for text this result has none of |
+| `130` | interrupted |
 
 ## Quick start
 
 ```bash
 cd xiaoyuzhou
 pip install -e .          # installs the `xyz` command
-# …or run without installing:  ./run subs
+# …or run without installing:  ./run ep <eid>
 ```
-
-### Login (one time, SMS)
 
 ```bash
-xyz send-code 13800138000
-xyz login 13800138000 123456
+# What is this episode about?
+xyz ep 6952ae2814db1df9ef6556f8 --text
+
+# Grab the audio, named "<date> <title>.m4a"
+xyz audio 6952ae2814db1df9ef6556f8 -o ~/Podcasts/
+
+# What did listeners say? (top comments, newest show first)
+xyz comments 6952ae2814db1df9ef6556f8 | jq -r '.comments[] | "\(.author): \(.text)"'
+
+# Latest episodes of a show, title and date only
+xyz podcast 60bc9bc72e2eec1ef1ca23ac --fields episodes \
+  | jq -r '.episodes[] | "\(.pub_date_local)  \(.title)"'
 ```
 
-Token is stored at `~/cc-workspace/state/xiaoyuzhou/token.json` (`chmod 0600`). Override with `XIAOYUZHOU_STATE_DIR` if you don't use the `cc-workspace` convention. The token is **never** part of the repo (`.gitignore` excludes `state/`, `token.json` and the atomic-write `*.tmp` files).
+## Notes
 
-### Verify
+- **Truncation is always declared.** When the page carries fewer comments or episodes than exist, the output sets `truncated: true` and a `note` stating the real total — 20 of 275 is never presented as all of them.
+- **Commenter identity is dropped by default.** `uid`, `avatar`, `bio` and `gender` are omitted unless you pass `--identity`; nicknames and IP regions (which the site shows publicly) are kept.
+- **Audio extensions follow the MIME type.** Xiaoyuzhou serves both mp3 and m4a; naming an AAC file `.mp3` breaks players and transcribers.
+- **Downloads are atomic.** Audio is written to `.part` and renamed on success, so an interrupted run never leaves a file that looks complete.
+- **Requests are spaced ~1.5s apart** per client. This is courtesy toward the origin, not evasion.
+- **Dates are Beijing-local.** `pubDate` is UTC upstream, but the app and its listeners mean Beijing days, so `pub_date_local` converts before formatting.
+- **Paid or private episodes** publish no public media URL; `xyz audio` reports `no_audio_url` rather than writing an empty file.
 
-```bash
-xyz subs                  # should list your podcasts
-python scripts/verify.py  # live smoke test against the real API
-```
-
-### Development
+## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest          # fully offline — no token, no network
+pytest          # 140 tests, fully offline — no network, no account
 ruff check .
 ```
 
-CI runs both on Python 3.11–3.13. The runners are UTC on purpose: the Beijing-time conversions are exactly the kind of thing that looks fine on a CST laptop.
-
-## Design notes
-
-- **Composable surface**: JSON to stdout, exit codes for success/failure, `--fields`/`--jsonl` so callers pull only what they need. No fat fixed payloads.
-- **Real pagination**: `list_episodes` follows `loadMoreKey` (safety ceiling 100 pages), dedupes on `eid` so a cursor that shifts mid-walk can't yield the same episode twice, and stops as soon as the feed drops below `--since`.
-- **Agent-first schemas**: shallow dicts, snake_case, ISO 8601 timestamps — no `{data:{data:[...]}}` wrappers.
-- **Transparent auth**: on 401 the client refreshes once and retries; callers never see auth state. 4xx during refresh clears the token (re-login needed); network errors leave state alone.
-- **Atomic token writes**: `fcntl.flock` + uuid'd `.tmp` + `os.replace`; dir `0o700`, file `0o600`.
-- **Distributable**: no hardcoded `/Users/...` paths, no homebrew assumptions; Intel Mac, Apple Silicon, Linux. Relocate state via `$XIAOYUZHOU_STATE_DIR`.
-- **Read-only on purpose**: write endpoints exist upstream but are deliberately not exposed.
-
-## Gotchas
-
-- **Date windows are Beijing-local (UTC+8)** — the API's `pubDate` is UTC, but the app (and any human) means Beijing days. `--since/--until` convert before comparing, so an episode posted 00:00–08:00 Beijing lands on the right day instead of the previous UTC day.
-- **RSS-bridged shows still have transcripts** — for podcasts syndicated from external hosts (e.g. Ximalaya), `media.id` is the external playback URL and asking the transcript API about it returns `no_subtitle`. Xiaoyuzhou mirrors the audio and serves the transcript under the episode's native `transcriptMediaId`; the client's `media_id` prefers it automatically (identical to `media.id` for native shows).
-- **Android UA is required** — the transcript CDN validates User-Agent strictly; `_app_headers()` already uses the correct Xiaomi MI 6 / Android 28 UA.
-- **`get_episode` is GET + query string**; other authenticated endpoints are POST + JSON body (mirrors the app).
-- **`history` has no precise played-seconds** — upstream only exposes `is_played` / `is_finished`.
-- **`has_unread` is tri-state** — `true` / `false`, or `null` when the show has never been opened (no read marker) or a timestamp won't parse. Treat `null` as unknown, not as "unread"; it is a convenience field derived from `latestEpisodePubDate` vs `readTrackInfo.lastSeenAt`, not something upstream reports directly.
+Tests run against real `__NEXT_DATA__` payloads captured from the site (in `tests/fixtures/`), so they validate the shape the site actually serves. CI covers Python 3.11–3.13; runners are UTC on purpose, since the Beijing-time conversions look fine on a CST machine either way.
 
 ## Acknowledgments
 
-Builds on the client and CLI work in [r266-tech/xiaoyuzhou](https://github.com/r266-tech/xiaoyuzhou) (MIT) — the auth/self-heal core and the endpoint mapping started there.
-
-That endpoint surface was in turn mapped against the unofficial Go client [MosesHe/xiaoyuzhoufm-mcp](https://github.com/MosesHe/xiaoyuzhoufm-mcp) and the [xyz-dl](https://github.com/xyz-dl) project — thanks to all three.
+Endpoint and page-shape exploration built on the earlier work in [r266-tech/xiaoyuzhou](https://github.com/r266-tech/xiaoyuzhou) (MIT).
 
 ## License
 

@@ -1,7 +1,7 @@
 [project]
 name = "xiaoyuzhou"
 version = "0.1.0"
-description = "Xiaoyuzhou FM CLI — agent-friendly, composable, clean."
+description = "Xiaoyuzhou FM CLI — public episode audio, shownotes and comments. No account required."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "huangchenxi" }]
